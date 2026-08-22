@@ -5,13 +5,14 @@
 #include "api/IDearOreUIApi.h"
 #include "api/types/Id.h"
 
+#include "mod/examples/ExampleBase.h"
+
 #include <atomic>
 #include <memory>
+#include <string>
 #include <thread>
 
 namespace my_mod {
-
-class StateCenter;
 
 class MyMod {
 
@@ -33,10 +34,15 @@ public:
 
 private:
     /// Acquires the DearOreUI API instance through the pure C bridge and
-    /// hands it to StateCenter. Returns false when the bridge is unavailable.
+    /// starts the config-selected tutorial example. Returns false when the
+    /// bridge is unavailable.
     bool connectDearOreUI();
 
     void disconnectDearOreUI();
+
+    /// Builds the active example (config.json "example" key, default "07")
+    /// via ExampleFactory and registers it.
+    bool startExample(std::string const& configJson);
 
     ll::mod::NativeMod& mSelf;
 
@@ -45,7 +51,8 @@ private:
     dearoreui::api::IDearOreUIApi* mOreui{nullptr};
     dearoreui::api::ModId          mModId;
 
-    std::unique_ptr<StateCenter> mStateCenter;
+    // The active tutorial example (one at a time).
+    std::unique_ptr<examples::ExampleBase> mExample;
 
     // Retry lifecycle (defensive; LL dependency ordering normally connects
     // on the first attempt).

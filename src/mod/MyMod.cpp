@@ -1,6 +1,6 @@
 #include "mod/MyMod.h"
 
-#include "mod/StateCenter.h"
+#include "mod/examples/ExampleFactory.h"
 
 #include "bridge/DearOreUIBridge.h"
 
@@ -9,6 +9,8 @@
 #include "ll/api/thread/InterruptableSleep.h"
 
 #include <chrono>
+#include <fstream>
+#include <sstream>
 #include <string>
 
 #ifdef _WIN32
@@ -56,6 +58,24 @@ bool MyMod::connectDearOreUI() {
         getSelf().getLogger().warn("DearOreUI bridge export is not available.");
         return false;
     }
+    // Select the active tutorial example from mod dir config.json
+    // ({"example":"07"} default; "01".."07"; unknown ids fall back to 07).
+    std::string configJson;
+    try {
+        auto configPath = getSelf().getModDir() / "config.json";
+        std::ifstream stream(configPath);
+        if (stream) {
+            std::stringstream buffer;
+            buffer << stream.rdbuf();
+            configJson = buffer.str();
+            getSelf().getLogger().info("Read config from {}", configPath.string());
+        } else {
+            getSelf().getLogger().info("No config.json at {}; defaults to example 07 (state center).", configPath.string());
+        }
+    } catch (...) {
+        getSelf().getLogger().warn("Failed to read config.json; defaults to example 07.");
+    }
+
     auto bridge = queryApi(1);
     if (bridge.status != DearOreUIBridge_Ok) {
         switch (bridge.status) {
@@ -69,7 +89,7 @@ bool MyMod::connectDearOreUI() {
         // Defensive retry: poll the thread-safe bridge query; hand the API to
         // the client main thread when it becomes ready.
         mRetryStop  = false;
-        mRetryThread = std::jthread([this](std::stop_token stop) {
+        mRetryThread = std::jthread([this, configJson](std::stop_token stop) {
             ll::thread::InterruptableSleep sleeper;
             int                            polls = 0;
             while (!stop.stop_requested() && !mRetryStop.load() && polls < kMaxRetryPolls) {
@@ -77,14 +97,11 @@ bool MyMod::connectDearOreUI() {
                 if (candidate.status == DearOreUIBridge_Ok) {
                     void* apiPtr = candidate.api;
                     getSelf().getLogger().info("DearOreUI ready, handing API to main thread.");
-                    ll::thread::ClientThreadExecutor::getDefault().execute([this, apiPtr]() {
+                    ll::thread::ClientThreadExecutor::getDefault().execute([this, apiPtr, configJson]() {
                         if (mRetryStop.load()) return;
                         mOreui = static_cast<dearoreui::api::IDearOreUIApi*>(apiPtr);
-                        mModId = dearoreui::api::ModId{"example.state_center"};
-                        mStateCenter = std::make_unique<StateCenter>(*mOreui, mModId, *this);
-                        if (!mStateCenter->registerAll()) {
-                            getSelf().getLogger().error("StateCenter registration failed.");
-                            mStateCenter.reset();
+                        if (!startExample(configJson)) {
+                            getSelf().getLogger().error("Example registration failed.");
                             mOreui = nullptr;
                         }
                     });
@@ -100,12 +117,9 @@ bool MyMod::connectDearOreUI() {
         return false;
     }
     getSelf().getLogger().info("Connected to DearOreUI, protocol {}", bridge.protocolVersion);
-    mOreui       = static_cast<dearoreui::api::IDearOreUIApi*>(bridge.api);
-    mModId       = dearoreui::api::ModId{"example.state_center"};
-    mStateCenter = std::make_unique<StateCenter>(*mOreui, mModId, *this);
-    if (!mStateCenter->registerAll()) {
-        getSelf().getLogger().error("StateCenter registration failed.");
-        mStateCenter.reset();
+    mOreui = static_cast<dearoreui::api::IDearOreUIApi*>(bridge.api);
+    if (!startExample(configJson)) {
+        getSelf().getLogger().error("Example registration failed.");
         mOreui = nullptr;
         return false;
     }
@@ -113,12 +127,27 @@ bool MyMod::connectDearOreUI() {
 }
 
 void MyMod::disconnectDearOreUI() {
-    if (mStateCenter) {
-        mStateCenter->shutdown();
-        mStateCenter.reset();
+    if (mExample) {
+        mExample->shutdown();
+        mExample.reset();
     }
     mModId = dearoreui::api::ModId{};
     mOreui = nullptr;
+}
+
+// Builds the active tutorial example via the factory and registers it.
+bool MyMod::startExample(std::string const& configJson) {
+    mExample = examples::ExampleFactory::create(*mOreui, *this, configJson);
+    if (!mExample) {
+        return false;
+    }
+    if (!mExample->registerAll()) {
+        getSelf().getLogger().error("Example '{}' registration failed.", mExample->name());
+        mExample.reset();
+        return false;
+    }
+    getSelf().getLogger().info("Example '{}' is active.", mExample->name());
+    return true;
 }
 
 bool MyMod::enable() {
