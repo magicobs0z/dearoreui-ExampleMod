@@ -4,8 +4,8 @@
 #include "api/types/Event.h"
 #include "api/types/Id.h"
 
-#include "ll/api/event/Listener.h"
-#include "ll/api/event/world/ClientLevelTickEvent.h"
+#include "ll/api/data/CancellableCallback.h"
+#include "ll/api/thread/ClientThreadExecutor.h"
 
 #include <chrono>
 #include <deque>
@@ -22,8 +22,10 @@ class MyMod;
 // component UI (panel + tab bar + dynamic body containers), the single
 // JS->C++ dispatch target (example.state.init), the three C++->JS event
 // streams (hud.tick / log.append / diag.refresh), the real data sources
-// (process memory, uptime, world tick, DearOreUI diagnostics) and the page
-// lifecycle/LL-event wiring. All mutation calls run on the client main thread.
+// (process memory, uptime, push counter, DearOreUI diagnostics) and the page
+// lifecycle wiring. The periodic pushes run on the client main thread through
+// a self-rescheduling ClientThreadExecutor::executeAfter timer (the LL world
+// ClientLevelTickEvent emitter is not ready during mod enable).
 class StateCenter {
 public:
     StateCenter(dearoreui::api::IDearOreUIApi& api, dearoreui::api::ModId modId, MyMod& mod);
@@ -33,11 +35,11 @@ public:
     StateCenter& operator=(StateCenter const&) = delete;
 
     /// Registers script + component UI + host method + page subscriptions +
-    /// the LL tick listener. Returns false and cleans up on failure.
+    /// the client-thread push timer. Returns false and cleans up on failure.
     bool registerAll();
 
-    /// Reverses registration order, removes the LL listener and unregisters
-    /// the mod. Safe to call from disable().
+    /// Reverses registration order, cancels the timer and unregisters the mod.
+    /// Safe to call from disable().
     void shutdown();
 
     // Host method payload (example.state.init): batch initial snapshot.
@@ -48,7 +50,8 @@ private:
     void publishStatus();
     void publishLogs();
     void publishDiag();
-    void onClientTick(ll::event::ClientLevelTickEvent& event);
+    void onTimer();
+    void stopTimer();
     void onPageReady(dearoreui::api::PageContextView const& view);
     void onPageDestroyed(dearoreui::api::PageContextView const& view);
 
@@ -63,17 +66,18 @@ private:
     MyMod&                         mMod;
 
     // Handles.
-    std::optional<dearoreui::api::RegistrationHandle> mScriptHandle;
+
     std::optional<dearoreui::api::RegistrationHandle> mUiHandle;
     std::optional<dearoreui::api::RegistrationHandle> mHostMethodHandle;
     std::optional<dearoreui::api::SubscriptionHandle> mReadySub;
     std::optional<dearoreui::api::SubscriptionHandle> mDestroyedSub;
-    std::shared_ptr<ll::event::Listener<ll::event::ClientLevelTickEvent>> mTickListener;
+    std::shared_ptr<ll::data::CancellableCallback>    mTimer;
 
     // Live data (client main thread only).
     std::optional<dearoreui::api::ContextId> mContextId;
     std::chrono::steady_clock::time_point    mStarted{};
-    std::uint64_t                            mTick{0};
+    std::uint64_t                            mPushes{0};
+    std::uint64_t                            mTimerRounds{0};
     std::size_t                              mLastLogIndex{0};
     struct LogLine {
         std::uint64_t timestampMs;

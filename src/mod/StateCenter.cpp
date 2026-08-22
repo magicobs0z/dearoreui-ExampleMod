@@ -3,13 +3,13 @@
 #include "mod/MyMod.h"
 
 #include "api/IHostMethod.h"
-#include "api/manifest/ScriptManifest.h"
+
 #include "api/manifest/UiManifest.h"
 #include "api/types/ComponentSpec.h"
 #include "api/types/DomNode.h"
 #include "api/types/Page.h"
 
-#include "ll/api/event/EventBus.h"
+
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -29,32 +29,31 @@ namespace my_mod {
 namespace {
 
 // ---------------------------------------------------------------------------
-// Page script (registered through registerScript + UiManifest.scripts). Single
-// JS->C++ dispatch: example.state.init. Everything else flows C++->JS events.
-// Dynamic regions are the ComponentSpec-body containers (sc-tab-*).
+// Page script. Injected as a <script> DomNode inside the ComponentSpec body so
+// it shares the component DOM build sequence (the ore://script resource path
+// is not exercised; this is the verified injection channel). Single JS->C++
+// dispatch: example.state.init. Everything else flows C++->JS events. Dynamic
+// regions are the ComponentSpec-body containers (sc-tab-*).
 // ---------------------------------------------------------------------------
 constexpr char kStateCenterJs[] = R"js((function () {
   'use strict';
   function $(id) { return document.getElementById(id); }
   function esc(s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 
-  // ---- Tab switching: renderer emits [data-component="tab"] in declaration
-  // order (status / log / diag); body panels are the sc-tab-* containers.
-  var tabs    = Array.prototype.slice.call(document.querySelectorAll('[data-component="tab"]'));
-  var panels  = ['sc-tab-status', 'sc-tab-log', 'sc-tab-diag'];
+  var bootAttempts = 0;
+  var eventNames = ['hud.tick', 'log.append', 'diag.refresh'];
+  var inited = false;
+
   function activate(i) {
+    var panels = ['sc-tab-status', 'sc-tab-log', 'sc-tab-diag'];
     for (var k = 0; k < panels.length; k++) {
       var p = $(panels[k]);
       if (p) p.style.display = (k === i) ? 'block' : 'none';
     }
+    var tabs = document.querySelectorAll('[data-component="tab"]');
     for (var t = 0; t < tabs.length; t++) {
       if (tabs[t]) tabs[t].style.opacity = (t === i) ? '1' : '0.55';
     }
-  }
-  for (var i = 0; i < tabs.length; i++) {
-    (function (idx) {
-      if (tabs[idx]) tabs[idx].addEventListener('click', function () { activate(idx); });
-    })(i);
   }
 
   // ---- Status tab: hud.tick payload -> key/value rows.
@@ -65,7 +64,7 @@ constexpr char kStateCenterJs[] = R"js((function () {
     rows.innerHTML =
       '<div>内存 <b>' + esc(d.memMb) + ' MB</b></div>' +
       '<div>运行 <b>' + esc(d.uptimeSec) + ' s</b></div>' +
-      '<div>世界 tick <b>' + esc(d.tick) + '</b></div>' +
+      '<div>推送次数 <b>' + esc(d.pushes) + '</b></div>' +
       '<div>协议 <b>' + esc(d.protocol) + '</b> / ready=' + (d.ready ? '<b style="color:#7ee787;">true</b>' : '<b style="color:#ff7b72;">false</b>') + '</div>' +
       '<div>本 Mod UI 句柄 <b>' + esc(d.uiHandles) + '</b></div>' +
       '<div>DearOreUI <b>' + esc(d.runtimeVersion) + '</b></div>';
@@ -116,25 +115,46 @@ constexpr char kStateCenterJs[] = R"js((function () {
     box.scrollTop = box.scrollHeight;
   }
 
-  window.oreui.event.on('hud.tick', renderStatus);
-  window.oreui.event.on('log.append', renderLog);
-  window.oreui.event.on('diag.refresh', renderDiag);
+  // Boot when the component DOM is present (the <script> body node is built in
+  // the same batch as the containers, but keep a bounded retry for safety).
+  function boot() {
+    bootAttempts++;
+    var root = $('sc-tab-status');
+    if (!root || !window.oreui) {
+      if (bootAttempts < 40) { setTimeout(boot, 50); return; }
+      return;
+    }
+    // Tab switching: renderer emits [data-component="tab"] in declaration
+    // order (status / log / diag).
+    var tabs = document.querySelectorAll('[data-component="tab"]');
+    for (var i = 0; i < tabs.length; i++) {
+      (function (idx, t) {
+        if (t) t.addEventListener('click', function () { activate(idx); });
+      })(i, tabs[i]);
+    }
+    window.oreui.event.on('hud.tick', renderStatus);
+    window.oreui.event.on('log.append', renderLog);
+    window.oreui.event.on('diag.refresh', renderDiag);
 
-  // Single allowed JS->C++ dispatch (ViewDispatchAlreadyUsed after this).
-  try {
-    window.oreui.host.call('example.state.init', { want: ['status', 'logs', 'diag'] }).then(function (res) {
+    // Single allowed JS->C++ dispatch (ViewDispatchAlreadyUsed after this).
+    if (!inited) {
+      inited = true;
       try {
-        var all = JSON.parse(res);
-        if (all.status) renderStatus(all.status);
-        if (all.logs) renderLog(all.logs);
-        if (all.diag) renderDiag(all.diag);
+        window.oreui.host.call('example.state.init', { want: ['status', 'logs', 'diag'] }).then(function (res) {
+          try {
+            var all = JSON.parse(res);
+            if (all.status) renderStatus(all.status);
+            if (all.logs) renderLog(all.logs);
+            if (all.diag) renderDiag(all.diag);
+          } catch (e) {}
+        }).catch(function () {
+          try { renderStatus({ memMb: '?', uptimeSec: '?', pushes: '?', protocol: '?', ready: false, uiHandles: 0, runtimeVersion: '?' }); } catch (e) {}
+        });
       } catch (e) {}
-    }).catch(function () {
-      try { renderStatus({ memMb: '?', uptimeSec: '?', tick: '?', protocol: '?', ready: false, uiHandles: 0, runtimeVersion: '?' }); } catch (e) {}
-    });
-  } catch (e) {}
-
-  activate(0);
+    }
+    activate(0);
+  }
+  boot();
 })();
 )js";
 
@@ -209,7 +229,7 @@ std::string StateCenter::collectStatusJson() const {
     json  = "{";
     json += "\"memMb\":" + collectMemoryMb() + ",";
     json += "\"uptimeSec\":" + std::to_string(uptimeSec) + ",";
-    json += "\"tick\":" + std::to_string(mTick) + ",";
+    json += "\"pushes\":" + std::to_string(mPushes) + ",";
     json += "\"protocol\":" + std::to_string(mApi.getProtocolVersion()) + ",";
     json += "\"ready\":" + std::string(mApi.isReady() ? "true" : "false") + ",";
     json += "\"uiHandles\":" + std::to_string(mUiHandle.has_value() ? 1 : 0) + ",";
@@ -331,16 +351,32 @@ void StateCenter::publishDiag() {
     }
 }
 
-void StateCenter::onClientTick(ll::event::ClientLevelTickEvent& /*event*/) {
-    ++mTick;
-    if (mTick % 20 == 0) {
+void StateCenter::onTimer() {
+    ++mTimerRounds;
+    if (mTimerRounds % 2 == 0) { // ~400ms cadence
         publishStatus();
-        if (mTick % 100 == 0) {
+        ++mPushes;
+        if (mTimerRounds % 10 == 0) { // ~2s cadence
             publishDiag();
         }
         if (mLogs.size() > mLastLogIndex) {
             publishLogs();
         }
+    }
+    // Self-reschedule while a page is alive.
+    if (mContextId.has_value()) {
+        stopTimer();
+        mTimer = ll::thread::ClientThreadExecutor::getDefault().executeAfter(
+            [this]() { onTimer(); },
+            std::chrono::milliseconds(200)
+        );
+    }
+}
+
+void StateCenter::stopTimer() {
+    if (mTimer) {
+        mTimer->cancel();
+        mTimer.reset();
     }
 }
 
@@ -348,49 +384,70 @@ void StateCenter::onPageReady(dearoreui::api::PageContextView const& view) {
     mContextId = view.id;
     appendLog("info", "page ready context " + std::to_string(view.id.value()));
     publishStatus();
+    ++mPushes;
     publishLogs();
     publishDiag();
+    // Start the periodic push timer.
+    if (!mTimer) {
+        mTimer = ll::thread::ClientThreadExecutor::getDefault().executeAfter(
+            [this]() { onTimer(); },
+            std::chrono::milliseconds(200)
+        );
+    }
 }
 
 void StateCenter::onPageDestroyed(dearoreui::api::PageContextView const& view) {
     appendLog("info", "page destroyed context " + std::to_string(view.id.value()));
     mContextId.reset();
+    stopTimer();
 }
 
 bool StateCenter::registerAll() {
     auto& logger = mMod.getSelf().getLogger();
 
-    // 1. Script resource (page interactions; UiManifest.scripts references it).
-    dearoreui::api::ScriptManifest scriptManifest;
-    scriptManifest.modNamespace = mModId.value();
-    scriptManifest.path         = "state_center.js";
-    scriptManifest.fingerprint  = "state_center.1";
-    scriptManifest.pageScopes   = {dearoreui::api::PageScope::Any};
-    auto script = mApi.registerScript(mModId, scriptManifest, std::string(kStateCenterJs));
-    if (script.isErr()) {
-        logger.error("registerScript failed: {}", script.error().message);
+    // 0. Mod identity must be registered first: every registration below
+    // validates owner against the mod registry.
+    dearoreui::api::ModManifest modManifest;
+    modManifest.id           = mModId;
+    modManifest.modNamespace = mModId.value();
+    modManifest.displayName  = "State Center Example Mod";
+    modManifest.modVersion   = dearoreui::api::Version{1, 0, 0};
+    modManifest.permissions  = {
+        dearoreui::api::Permission::HostReadOnly,
+        dearoreui::api::Permission::PageObserve,
+        dearoreui::api::Permission::UiMount,
+        dearoreui::api::Permission::DiagnosticRead,
+    };
+    auto modRegistered = mApi.registerMod(modManifest);
+    if (modRegistered.isErr()) {
+        logger.error("registerMod failed: {}", modRegistered.error().message);
         return false;
     }
-    mScriptHandle = script.value();
 
-    // 2. Declarative component UI (vanilla-rendered panel + tabs + body
-    // containers that the page script fills).
+    // 1. Declarative component UI (vanilla-rendered panel + tabs + body
+    // containers that the page script fills). The page script travels as a
+    // <script> DomNode at the end of the body: it is built in the same batch
+    // as the containers and executes against the just-mounted DOM, avoiding
+    // the (unverified) ore://script resource path.
     dearoreui::api::UiManifest uiManifest;
-    uiManifest.modNamespace = mModId.value();
-    uiManifest.id           = "state_center";
-    uiManifest.kind         = dearoreui::api::UiKind::Overlay;
-    uiManifest.pageScopes   = {dearoreui::api::PageScope::Any};
-    uiManifest.anchor       = dearoreui::api::UiAnchor::TopRight;
+    uiManifest.modNamespace  = mModId.value();
+    uiManifest.id            = "state_center";
+    uiManifest.kind          = dearoreui::api::UiKind::Overlay;
+    uiManifest.pageScopes    = {dearoreui::api::PageScope::Any};
+    uiManifest.anchor        = dearoreui::api::UiAnchor::TopRight;
     uiManifest.pointerEvents = true; // tab clicks need pointer input
     uiManifest.containerId =
         dearoreui::api::makeUiContainerId(uiManifest.modNamespace, uiManifest.kind, uiManifest.id);
     uiManifest.fingerprint = "state_center.v1";
-    uiManifest.scripts     = {"state_center.js"};
 
+    // Static labels stay ASCII: the vanilla renderer fonts (Minecraft
+    // Ten/Seven) have no CJK glyphs, so Chinese labels render as broken
+    // boxes. Dynamic text written by the page script uses Noto Sans (the
+    // game's localized glyph font) and renders CJK fine.
     dearoreui::api::ComponentSpec panel;
     panel.kind  = dearoreui::api::ComponentKind::Panel;
     panel.style = "dark";
-    panel.label = "状态中心";
+    panel.label = "State Center";
 
     dearoreui::api::ComponentSpec tabBar;
     tabBar.kind = dearoreui::api::ComponentKind::TabBar;
@@ -400,20 +457,20 @@ bool StateCenter::registerAll() {
         tab.label = std::move(label);
         return tab;
     };
-    tabBar.children = {makeTab("状态"), makeTab("日志"), makeTab("诊断")};
+    tabBar.children = {makeTab("Status"), makeTab("Log"), makeTab("Diag")};
     panel.children.push_back(std::move(tabBar));
 
     auto makePanelDiv = [](std::string id, std::string mainId, bool hidden) {
         dearoreui::api::DomNode node;
         node.tag   = "div";
         node.attrs.push_back(dearoreui::api::DomAttr{"id", std::move(id)});
-        node.style = "font-family:Minecraft Seven v2;font-size:12px;line-height:1.8;"
+        node.style = "font-family:Noto Sans,\"Minecraft Seven v2\";font-size:12px;line-height:1.8;"
                      "color:#d0d1d4;padding:0.6rem 0.2rem;";
         if (hidden) {
             node.style += "display:none;";
         }
         dearoreui::api::DomNode inner;
-        inner.tag = "div";
+        inner.tag   = "div";
         inner.attrs.push_back(dearoreui::api::DomAttr{"id", std::move(mainId)});
         inner.style = "max-height:420px;overflow-y:auto;word-break:break-all;";
         node.children.push_back(std::move(inner));
@@ -423,19 +480,19 @@ bool StateCenter::registerAll() {
         makePanelDiv("sc-tab-status", "sc-status-rows", false),
         makePanelDiv("sc-tab-log", "sc-log", true),
         makePanelDiv("sc-tab-diag", "sc-diag", true),
+        // Page script: created as a <script> element after the containers.
+        dearoreui::api::DomNode{"script", "", {}, std::string(kStateCenterJs), {}, {}, {}},
     };
 
     auto ui = mApi.registerComponent(mModId, uiManifest, panel);
     if (ui.isErr()) {
         logger.error("registerComponent failed: {}", ui.error().message);
-        static_cast<void>(mApi.unregister(*mScriptHandle));
-        mScriptHandle.reset();
         return false;
     }
     mUiHandle = ui.value();
     appendLog("info", "component ui registered");
 
-    // 3. Host method (single dispatch target).
+    // 2. Host method (single dispatch target).
     dearoreui::api::HostMethodManifest hostManifest;
     hostManifest.name        = "example.state.init";
     hostManifest.pageScopes  = {dearoreui::api::PageScope::Any};
@@ -451,13 +508,11 @@ bool StateCenter::registerAll() {
         logger.error("registerHostMethod failed: {}", host.error().message);
         static_cast<void>(mApi.unregisterUi(*mUiHandle));
         mUiHandle.reset();
-        static_cast<void>(mApi.unregister(*mScriptHandle));
-        mScriptHandle.reset();
         return false;
     }
     mHostMethodHandle = host.value();
 
-    // 4. Page lifecycle.
+    // 3. Page lifecycle.
     dearoreui::api::PageSubscriptionOptions subOptions;
     subOptions.owner  = mModId;
     subOptions.scopes = {dearoreui::api::PageScope::Any};
@@ -472,8 +527,6 @@ bool StateCenter::registerAll() {
         mHostMethodHandle.reset();
         static_cast<void>(mApi.unregisterUi(*mUiHandle));
         mUiHandle.reset();
-        static_cast<void>(mApi.unregister(*mScriptHandle));
-        mScriptHandle.reset();
         return false;
     }
     mReadySub = ready.value();
@@ -491,31 +544,13 @@ bool StateCenter::registerAll() {
         mHostMethodHandle.reset();
         static_cast<void>(mApi.unregisterUi(*mUiHandle));
         mUiHandle.reset();
-        static_cast<void>(mApi.unregister(*mScriptHandle));
-        mScriptHandle.reset();
         return false;
     }
     mDestroyedSub = destroyed.value();
 
-    // 5. LL world tick listener (client main thread).
-    auto& bus = ll::event::EventBus::getInstance();
-    mTickListener = bus.emplaceListener<ll::event::ClientLevelTickEvent>(
-        [this](ll::event::ClientLevelTickEvent& event) { onClientTick(event); }
-    );
-    if (mTickListener == nullptr) {
-        logger.error("emplaceListener(ClientLevelTickEvent) failed");
-        static_cast<void>(mApi.unsubscribePage(*mDestroyedSub));
-        mDestroyedSub.reset();
-        static_cast<void>(mApi.unsubscribePage(*mReadySub));
-        mReadySub.reset();
-        static_cast<void>(mApi.unregisterHostMethod(*mHostMethodHandle));
-        mHostMethodHandle.reset();
-        static_cast<void>(mApi.unregisterUi(*mUiHandle));
-        mUiHandle.reset();
-        static_cast<void>(mApi.unregister(*mScriptHandle));
-        mScriptHandle.reset();
-        return false;
-    }
+    // 5. The periodic push timer starts on the first page Ready. No world
+    // tick listener: LL's ClientLevelTickEvent emitter is not ready during
+    // mod enable (verified on the real client).
     appendLog("info", "fully registered");
     return true;
 }
@@ -523,11 +558,7 @@ bool StateCenter::registerAll() {
 void StateCenter::shutdown() {
     auto& logger = mMod.getSelf().getLogger();
 
-    if (mTickListener) {
-        auto& bus = ll::event::EventBus::getInstance();
-        bus.removeListener(mTickListener);
-        mTickListener.reset();
-    }
+    stopTimer();
     if (mDestroyedSub.has_value()) {
         static_cast<void>(mApi.unsubscribePage(*mDestroyedSub));
         mDestroyedSub.reset();
@@ -543,10 +574,6 @@ void StateCenter::shutdown() {
     if (mUiHandle.has_value()) {
         static_cast<void>(mApi.unregisterUi(*mUiHandle));
         mUiHandle.reset();
-    }
-    if (mScriptHandle.has_value()) {
-        static_cast<void>(mApi.unregister(*mScriptHandle));
-        mScriptHandle.reset();
     }
     mContextId.reset();
     mLogs.clear();
