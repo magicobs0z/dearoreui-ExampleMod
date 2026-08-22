@@ -3,18 +3,15 @@
 #include "ll/api/mod/NativeMod.h"
 
 #include "api/IDearOreUIApi.h"
-#include "api/types/Event.h"
-#include "api/types/HostMethodManifest.h"
-#include "api/types/Page.h"
+#include "api/types/Id.h"
 
 #include <atomic>
 #include <memory>
-#include <optional>
-#include <string>
 #include <thread>
-#include <vector>
 
 namespace my_mod {
+
+class StateCenter;
 
 class MyMod {
 
@@ -35,27 +32,9 @@ public:
     bool disable();
 
 private:
-    /// Queries the bridge once (thread-safe, does not modify members). Returns
-    /// the bridge result; `bridgeLoaded` reports whether the symbol resolved.
-    struct ApiAcquire {
-        unsigned char status;        // DearOreUIBridgeStatus
-        unsigned char bridgeLoaded;  // bool
-        unsigned int  protocolVersion;
-        void*         api;
-    };
-    ApiAcquire acquireApi();
-
-    /// Registers this mod's capabilities with DearOreUI. Must run on the
-    /// client main thread (all mutation calls). Assumes the bridge returned Ok.
-    bool performRegistration();
-
-    /// Called from enable() on the main thread. On Ok registers immediately;
-    /// otherwise starts the background readiness retry loop.
+    /// Acquires the DearOreUI API instance through the pure C bridge and
+    /// hands it to StateCenter. Returns false when the bridge is unavailable.
     bool connectDearOreUI();
-
-    /// Starts the background retry thread: polls QueryApi until Ok (or
-    /// timeout), then hands the api pointer to the client main thread.
-    void startReadyRetry();
 
     void disconnectDearOreUI();
 
@@ -66,21 +45,12 @@ private:
     dearoreui::api::IDearOreUIApi* mOreui{nullptr};
     dearoreui::api::ModId          mModId;
 
-    // Handles owned by this mod; cleaned up in disconnectDearOreUI().
-    std::optional<dearoreui::api::RegistrationHandle> mHostMethodHandle;
-    std::optional<dearoreui::api::RegistrationHandle> mUiHandle;
-    std::optional<dearoreui::api::SubscriptionHandle> mPageSubscription;
+    std::unique_ptr<StateCenter> mStateCenter;
 
-    // Latest page context captured from the Ready callback; the context used
-    // by publishEvent (C++ -> JS pushes) and by the page JS dispatch.
-    std::optional<dearoreui::api::ContextId> mContextId;
-
-    // Retry lifecycle.
-    std::atomic<bool>  mRetryStop{false};
-    std::jthread       mRetryThread;
-
-    // Publishes the current status snapshot to the UI (hud.tick).
-    void publishStatusSnapshot();
+    // Retry lifecycle (defensive; LL dependency ordering normally connects
+    // on the first attempt).
+    std::atomic<bool> mRetryStop{false};
+    std::jthread      mRetryThread;
 };
 
 } // namespace my_mod
