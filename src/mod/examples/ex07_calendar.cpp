@@ -77,7 +77,7 @@ constexpr const char* kPageScript = R"js((function () {
     tries++; var root=document.getElementById('cal-root');
     if(!root||!window.oreui){if(tries<60)setTimeout(boot,50);return;}
     var d=new Date(); state.y=d.getFullYear();state.m=d.getMonth();state.today=key(state.y,state.m,d.getDate());state.selected=state.today;
-    css(root,'position:fixed;left:0;top:0;width:100vw;height:100vh;overflow:hidden;box-sizing:border-box;background:rgba(0,0,0,.95);font-family:'+F+';color:'+WHITE+';user-select:none;');
+    css(root,'position:fixed;top:0;left:0;right:0;bottom:0;overflow:hidden;background:rgba(0,0,0,.95);font-family:'+F+';color:'+WHITE+';user-select:none;');
     build(root); render(); bind(root);
     window.oreui.event.on('calendar.events',function(p){if(p&&p.events)state.events=p.events;render();});
     window.oreui.event.on('calendar.clock',function(p){var c=document.getElementById('cal-clock');if(c)text(c,pad(p.h||0)+':'+pad(p.mi||0)+':'+pad(p.s||0));var k=key(p.y||0,(p.m||1)-1,p.d||1);if(k!==state.today){var old=state.today;state.today=k;if(state.selected===old){state.selected=k;state.y=p.y||state.y;state.m=(p.m||1)-1;}render();}});
@@ -128,7 +128,7 @@ constexpr const char* kPageScript = R"js((function () {
     text(document.getElementById('cal-title'),state.y+' 年 '+(state.m+1)+' 月');
     var dt=state.selected.split('-'),dow=new Date(+dt[0],+dt[1]-1,+dt[2]).getDay(),events=state.events[state.selected]||[];
     text(document.getElementById('cal-day'),(+dt[1])+' 月 '+(+dt[2])+' 日 · 周'+week[dow]+(state.selected===state.today?'（今天）':''));
-    var list=document.getElementById('cal-list');list.innerHTML='';if(!events.length){var empty=el('div');text(empty,'这一天没有事件');css(empty,'height:36px;line-height:36px;text-align:center;color:'+LIGHT+';font-size:15px;');list.appendChild(empty);}else for(var e=0;e<events.length&&e<3;e++){var row=el('div');row.setAttribute('data-del',String(e));css(row,'position:relative;height:30px;line-height:30px;text-align:center;color:'+WHITE+';font-size:15px;border-bottom:1px solid '+BORDER+';cursor:pointer;');var label=el('span');text(label,'•  '+events[e]);css(label,'display:block;width:100%;height:30px;line-height:30px;text-align:center;');row.appendChild(label);var del=el('span');text(del,'×');css(del,'position:absolute;right:8px;top:0;width:24px;height:30px;line-height:30px;text-align:center;color:'+LIGHT+';');row.appendChild(del);list.appendChild(row);}
+    var list=document.getElementById('cal-list');list.innerHTML='';if(!events.length){var empty=el('div');text(empty,'这一天没有事件');css(empty,'height:36px;line-height:36px;text-align:center;color:'+LIGHT+';font-size:15px;');list.appendChild(empty);}else for(var e=0;e<events.length&&e<3;e++){var row=el('div');row.setAttribute('data-del',String(e));css(row,'position:relative;height:30px;line-height:30px;text-align:center;color:'+WHITE+';font-size:15px;border-bottom:1px solid '+BORDER+';cursor:pointer;');var label=el('span');text(label,'•  '+events[e]);css(label,'display:flex;align-items:center;justify-content:center;width:100%;height:30px;');row.appendChild(label);var del=el('span');text(del,'×');css(del,'position:absolute;right:8px;top:0;width:24px;height:30px;line-height:30px;text-align:center;color:'+LIGHT+';');row.appendChild(del);list.appendChild(row);}
   }
   function bind(root){root.addEventListener('click',function(e){var t=e.target,id=t&&t.id;if(id==='cal-prev'){state.m--;if(state.m<0){state.m=11;state.y--;}render();return;}if(id==='cal-next'){state.m++;if(state.m>11){state.m=0;state.y++;}render();return;}if(id==='cal-today'){var d=new Date();state.y=d.getFullYear();state.m=d.getMonth();state.selected=state.today;render();return;}if(id==='cal-add'){add();return;}while(t&&t!==root){if(t.getAttribute){var date=t.getAttribute('data-date'),del=t.getAttribute('data-del');if(date){state.selected=date;render();return;}if(del!==null){remove(+del);return;}}t=t.parentNode;}});var input=document.getElementById('cal-input');if(input)input.addEventListener('keydown',function(e){if(e.key==='Enter')add();});}
   function add(){var input=document.getElementById('cal-input'),s=input&&input.value.trim();if(!s)return;if(!state.events[state.selected])state.events[state.selected]=[];state.events[state.selected].push(s);input.value='';render();}
@@ -245,7 +245,10 @@ bool CalendarExample::registerAll() {
     body.push_back(dearoreui::api::DomNode{
         .tag   = "div",
         .attrs = {{"id", "cal-root"}},
-        .style = "position:fixed;left:0;top:0;width:100vw;height:100vh;",
+        // Verified full-screen pattern (stage 7.1): inset 0 instead of the
+        // unverified 100vw/100vh viewport units (unsupported units collapse
+        // the root to 0x0 and hide the black backdrop).
+        .style = "position:fixed;top:0;left:0;right:0;bottom:0;overflow:hidden;",
         .text  = "",
     });
     body.push_back(dearoreui::api::DomNode{.tag = "script", .text = kPageScript});
