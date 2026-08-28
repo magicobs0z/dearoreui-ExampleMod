@@ -21,10 +21,14 @@ namespace examples {
 // Example 06 - Host Method (JS -> C++), default OFF.
 //
 // Teaches the JS->C++ channel on the calendar: the page script calls
-//   window.oreui.host.call("calendar.init", {...})
+//   window.oreui.host.call("calendar.init", { want: ["today","events","config"] })
 // which the platform routes through the native "dearoreui" facet. The host
-// answers with a batch SEED-EVENT snapshot (today + tomorrow), which the page
-// renders as dots on the grid - a full round trip in one dispatch.
+// answers with a CONSOLIDATED session snapshot (authoritative today + seed
+// events + UI config), which the page renders - a full round trip in one dispatch.
+//
+// C1 (single-dispatch session merge): the facet channel allows only ONE
+// JS->C++ round trip per view, so the page merges its whole session data need
+// into that single request and this endpoint returns the whole snapshot back.
 //
 // IMPORTANT engine constraints (verified on the real client):
 //   * The RegisterForEvent/BindCall binding channel CRASHES this client (the
@@ -148,8 +152,13 @@ public:
 
     [[nodiscard]] std::string_view name() const override { return "06-host-method"; }
 
-    // Batch seed-event snapshot, keyed by local dates (today + tomorrow).
-    [[nodiscard]] std::string handleInit() const {
+    // C1: consolidated session snapshot. The facet channel gives the page only
+    // ONE JS->C++ dispatch per view, so this single endpoint returns the page's
+    // whole session data - authoritative today, seed events, UI config - in one
+    // response. The page declares its slices via { want: [...] } in the request
+    // args; this demo returns the full snapshot unconditionally (no JSON parse
+    // dependency), a production mod could prune slices server-side.
+    [[nodiscard]] std::string handleInit(std::string_view /*wantJson*/) const {
         std::time_t t = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
         std::tm local{};
 #ifdef _WIN32
@@ -165,10 +174,13 @@ public:
         char next[12];
         std::snprintf(next, sizeof(next), "%04d-%02d-%02d", tomorrow.tm_year + 1900, tomorrow.tm_mon + 1, tomorrow.tm_mday);
         return "{"
+               "\"today\":\"" + std::string(today) + "\","
                "\"events\":{"
                "\"" + std::string(today) + "\":[\"demo 09:00\",\"host pushed\"],"
                "\"" + std::string(next) + "\":[\"tomorrow plan\"]"
-               "}}";
+               "},"
+               "\"config\":{\"theme\":\"dark\",\"gridW\":38,\"gridH\":34}"
+               "}";
     }
 
 private:
@@ -180,8 +192,8 @@ private:
             return dearoreui::api::Permission::HostReadOnly;
         }
         [[nodiscard]] dearoreui::api::Result<std::string>
-        execute(dearoreui::api::ContextId /*contextId*/, std::string_view /*args*/) override {
-            return dearoreui::api::Result<std::string>::success(mOwner.handleInit());
+        execute(dearoreui::api::ContextId /*contextId*/, std::string_view args) override {
+            return dearoreui::api::Result<std::string>::success(mOwner.handleInit(args));
         }
         Ex06HostMethod& mOwner;
     };

@@ -1,11 +1,13 @@
 (function () {
-  // Absolute-positioned month grid kernel + one JS->C++ dispatch that pulls
-  // seed events (green dots). Heartbeat proves the page JS survives the
-  // facet call (the binding channel would have killed it - 0x40080201).
+  // Absolute-positioned month grid kernel + ONE JS->C++ dispatch that pulls
+  // the whole session snapshot (authoritative today, seed events, UI config).
+  // C1: the facet channel allows a single JS->C++ round trip per view, so the
+  // page merges ALL its data needs into that one request. Heartbeat proves the
+  // page JS survives the facet call (the binding channel would have killed it).
   var PAD = 6, CELL_W = 38, CELL_H = 34, TITLE_H = 34, HEAD_H = 22, FIX_H = 40;
-var FONT = 'Microsoft YaHei','SimHei','Noto Sans SC','Noto Sans','Segoe UI',sans-serif;
+  var FONT = "'Microsoft YaHei','SimHei','Noto Sans SC','Noto Sans','Segoe UI',sans-serif";
   var state = {
- viewY: 0, viewM: 0, selected: null, today: '', events: {} };
+ viewY: 0, viewM: 0, selected: null, today: '', events: {}, config: {} };
   var WEEK = ['日', '一', '二', '三', '四', '五', '六'];
   function pad(n) { return n < 10 ? '0' + n : '' + n; }
   function ymdStr(y, m, d) { return y + '-' + pad(m + 1) + '-' + pad(d); }
@@ -36,17 +38,28 @@ var FONT = 'Microsoft YaHei','SimHei','Noto Sans SC','Noto Sans','Segoe UI',sans
     bindEvents(root);
     // Heartbeat: proves JS survives the facet dispatch below.
     try { setInterval(function () { jsTick++; var j = $('cal-heart'); if (j) j.textContent = 'js: ' + jsTick; }, 1000); } catch (e) {}
-    // Single allowed JS->C++ dispatch -> seed events.
+    // C1: the ONE allowed JS->C++ dispatch pulls the whole session snapshot -
+    // today (authoritative host clock), seed events (green dots) and UI config.
+    // A second callHost on this view would be rejected (ViewDispatchAlreadyUsed).
     try {
-      window.oreui.host.call('calendar.init', { want: ['events'] }).then(function (res) {
+      window.oreui.host.call('calendar.init', {
+        want: ['today', 'events', 'config']
+      }).then(function (res) {
         try {
           var parsed = JSON.parse(res);
+          if (parsed && typeof parsed.today === 'string') {
+            state.today = parsed.today; // host-authoritative date -> today outline
+          }
           state.events = parsed && parsed.events ? parsed.events : {};
+          state.config = parsed && parsed.config ? parsed.config : {};
         } catch (e) { state.events = {}; }
         var n = 0;
         for (var k in state.events) { if (Object.prototype.hasOwnProperty.call(state.events, k)) { n += state.events[k].length; } }
         var info = $('cal-info');
-        if (info) info.textContent = 'init: loaded ' + n + ' event(s) via facet';
+        if (info) {
+          var cfg = state.config && state.config.theme ? ' · theme ' + state.config.theme : '';
+          info.textContent = 'init: ' + n + ' event(s) in 1 facet call' + cfg;
+        }
         renderCalendar();
       }).catch(function (err) {
         var info = $('cal-info');
