@@ -59,9 +59,10 @@ namespace {
 //   row.stack           > Input + Button(add)
 // ---------------------------------------------------------------------------
 constexpr const char* kPageScript = R"js((function () {
-  // Stable fallback: Section is the DearOreUI shell; dynamic calendar content
-  // uses explicit absolute DOM geometry because Grid/Stack state styling is
-  // not stable in this page context.
+  // R5: layout geometry is computed once by geometry() (initial build +
+  // window resize). render() never writes top/left/width/height/right/bottom
+  // (the engine pays O(4^Depth) for those) and only touches textContent and
+  // paint-only props (background/border-color/color) plus idempotent dots.
   var F = "'Microsoft YaHei','SimHei','Noto Sans SC','Noto Sans','Segoe UI',sans-serif";
   var WHITE='#ffffff', LIGHT='#d0d7de', DARK='#161b22', PANEL='#21262d', BORDER='#30363d', GREEN='#3fb950';
   var state={y:0,m:0,today:'',selected:'',events:{}};
@@ -70,6 +71,7 @@ constexpr const char* kPageScript = R"js((function () {
   function key(y,m,d){return y+'-'+pad(m+1)+'-'+pad(d);}
   function el(tag,id){var n=document.createElement(tag);if(id)n.id=id;return n;}
   function css(n,s){n.style.cssText=s;}
+  function setP(n,k,v){n.style.setProperty(k,v);} // single-property write: never clobbers sibling-owner props
   function text(n,s){n.textContent=s;}
   function has(k){return state.events[k]&&state.events[k].length>0;}
   var tries=0;
@@ -79,51 +81,72 @@ constexpr const char* kPageScript = R"js((function () {
     var d=new Date(); state.y=d.getFullYear();state.m=d.getMonth();state.today=key(state.y,state.m,d.getDate());state.selected=state.today;
     css(root,'position:fixed;top:0;left:0;right:0;bottom:0;overflow:hidden;background:rgba(0,0,0,.95);font-family:'+F+';color:'+WHITE+';user-select:none;');
     build(root); render(); bind(root);
+    window.addEventListener('resize',geometry);
     window.oreui.event.on('calendar.events',function(p){if(p&&p.events)state.events=p.events;render();});
     window.oreui.event.on('calendar.clock',function(p){var c=document.getElementById('cal-clock');if(c)text(c,pad(p.h||0)+':'+pad(p.mi||0)+':'+pad(p.s||0));var k=key(p.y||0,(p.m||1)-1,p.d||1);if(k!==state.today){var old=state.today;state.today=k;if(state.selected===old){state.selected=k;state.y=p.y||state.y;state.m=(p.m||1)-1;}render();}});
   }
   function build(root){
     root.innerHTML='';
-    var header=el('div','cal-header');css(header,'position:absolute;left:0;top:0;width:100%;height:60px;background:'+PANEL+';border-bottom:2px solid '+BORDER+';');root.appendChild(header);
-    var titleEl=el('div','cal-title');css(titleEl,'position:absolute;left:0;top:0;width:100%;height:60px;line-height:60px;text-align:center;font-size:26px;font-weight:bold;');header.appendChild(titleEl);
-    addButton(header,'cal-prev','‹','position:absolute;right:190px;top:12px;width:48px;height:36px;');
-    addButton(header,'cal-today','今天','position:absolute;right:120px;top:12px;width:60px;height:36px;color:'+GREEN+';');
-    addButton(header,'cal-next','›','position:absolute;right:54px;top:12px;width:48px;height:36px;');
-    var grid=el('div','cal-grid');css(grid,'position:absolute;left:0;top:60px;width:100%;');root.appendChild(grid);
-    for(var i=0;i<7;i++){var h=el('div');h.setAttribute('data-week',String(i));text(h,week[i]);css(h,'position:absolute;top:0;left:0;width:0;height:34px;line-height:34px;text-align:center;font-size:16px;color:'+LIGHT+';');grid.appendChild(h);}
-    for(var j=0;j<42;j++){var cell=el('div');cell.setAttribute('data-index',String(j));css(cell,'position:absolute;box-sizing:border-box;text-align:center;font-size:18px;line-height:1;cursor:pointer;border:1px solid transparent;border-radius:4px;');grid.appendChild(cell);}
-    var bottom=el('div','cal-bottom');css(bottom,'position:absolute;left:0;bottom:0;width:100%;height:245px;background:rgba(22,27,34,.94);border-top:2px solid '+BORDER+';');root.appendChild(bottom);
-    var day=el('div','cal-day');css(day,'position:absolute;left:20px;top:12px;width:calc(100% - 40px);height:32px;line-height:32px;text-align:center;font-size:18px;font-weight:bold;border-bottom:1px solid '+BORDER+';');bottom.appendChild(day);
-    var list=el('div','cal-list');css(list,'position:absolute;left:20px;top:52px;width:calc(100% - 40px);height:92px;overflow:hidden;');bottom.appendChild(list);
-    var input=el('input','cal-input');input.setAttribute('placeholder','输入事件…');css(input,'position:absolute;left:20px;bottom:55px;width:calc(100% - 150px);height:38px;box-sizing:border-box;text-align:center;font-family:'+F+';font-size:15px;color:'+WHITE+';background:'+DARK+';border:1px solid '+BORDER+';border-radius:5px;');bottom.appendChild(input);
-    addButton(bottom,'cal-add','添加','position:absolute;right:20px;bottom:55px;width:100px;height:38px;background:'+GREEN+';color:#0d1117;');
-    var clock=el('div','cal-clock');css(clock,'position:absolute;left:0;bottom:8px;width:100%;height:32px;line-height:32px;text-align:center;color:'+GREEN+';font-size:22px;font-weight:bold;');text(clock,'--:--:--');bottom.appendChild(clock);
+    var header=el('div','cal-header');css(header,'position:absolute;background:'+PANEL+';border-bottom:2px solid '+BORDER+';');root.appendChild(header);
+    var titleEl=el('div','cal-title');css(titleEl,'position:absolute;line-height:60px;text-align:center;font-size:26px;font-weight:bold;');header.appendChild(titleEl);
+    addButton(header,'cal-prev','‹','position:absolute;');
+    addButton(header,'cal-today','今天','position:absolute;');
+    addButton(header,'cal-next','›','position:absolute;');
+    var grid=el('div','cal-grid');css(grid,'position:absolute;');root.appendChild(grid);
+    for(var i=0;i<7;i++){var h=el('div');h.setAttribute('data-week',String(i));text(h,week[i]);css(h,'position:absolute;top:0;height:34px;line-height:34px;text-align:center;font-size:16px;color:'+LIGHT+';');grid.appendChild(h);}
+    for(var j=0;j<42;j++){var cell=el('div');cell.setAttribute('data-index',String(j));css(cell,'position:absolute;box-sizing:border-box;text-align:center;font-size:18px;cursor:pointer;border:1px solid transparent;border-radius:4px;color:'+WHITE+';');grid.appendChild(cell);}
+    var bottom=el('div','cal-bottom');css(bottom,'position:absolute;background:rgba(22,27,34,.94);border-top:2px solid '+BORDER+';');root.appendChild(bottom);
+    var day=el('div','cal-day');css(day,'position:absolute;line-height:32px;text-align:center;font-size:18px;font-weight:bold;border-bottom:1px solid '+BORDER+';');bottom.appendChild(day);
+    var list=el('div','cal-list');css(list,'position:absolute;overflow:hidden;');bottom.appendChild(list);
+    var input=el('input','cal-input');input.setAttribute('placeholder','输入事件…');css(input,'position:absolute;box-sizing:border-box;text-align:center;font-family:'+F+';font-size:15px;color:'+WHITE+';background:'+DARK+';border:1px solid '+BORDER+';border-radius:5px;');bottom.appendChild(input);
+    addButton(bottom,'cal-add','添加','position:absolute;');
+    var addB=document.getElementById('cal-add');if(addB){setP(addB,'background',GREEN);setP(addB,'color','#0d1117');}
+    var clock=el('div','cal-clock');css(clock,'position:absolute;line-height:32px;text-align:center;color:'+GREEN+';font-size:22px;font-weight:bold;');text(clock,'--:--:--');bottom.appendChild(clock);
+    geometry();
   }
   function addButton(parent,id,label,pos){var b=el('div',id);text(b,label);css(b,pos+'box-sizing:border-box;line-height:36px;text-align:center;font-family:'+F+';font-size:17px;color:'+LIGHT+';background:'+DARK+';border:0;outline:0;box-shadow:none;border-radius:5px;cursor:pointer;');parent.appendChild(b);}
-  function render(){
+  // R5: the ONLY place that writes layout geometry (build + resize). Uses
+  // per-property setProperty so build() identity styles stay intact.
+  function geometry(){
     var root=document.getElementById('cal-root'),grid=document.getElementById('cal-grid');if(!root||!grid)return;
     var W=root.clientWidth||window.innerWidth||1280,H=root.clientHeight||window.innerHeight||720;
     // Keep the complete calendar inside a centered 80% viewport rectangle.
     var mx=Math.floor(W*0.10), my=Math.floor(H*0.10), CW=Math.max(320,W-2*mx), CH=Math.max(420,H-2*my);
     var bottomH=Math.min(245,Math.floor(CH*0.30)), gridH=Math.max(260,CH-60-bottomH), cw=CW/7, ch=gridH/6;
     var header=document.getElementById('cal-header'), bottom=document.getElementById('cal-bottom');
-    if(header)css(header,'position:absolute;left:'+mx+'px;top:'+my+'px;width:'+CW+'px;height:60px;background:'+PANEL+';border-bottom:2px solid '+BORDER+';');
-    if(bottom)css(bottom,'position:absolute;left:'+mx+'px;top:'+(my+CH-bottomH)+'px;width:'+CW+'px;height:'+bottomH+'px;background:rgba(22,27,34,.96);border-top:2px solid '+BORDER+';');
+    if(header){setP(header,'left',mx+'px');setP(header,'top',my+'px');setP(header,'width',CW+'px');setP(header,'height','60px');}
+    if(bottom){setP(bottom,'left',mx+'px');setP(bottom,'top',(my+CH-bottomH)+'px');setP(bottom,'width',CW+'px');setP(bottom,'height',bottomH+'px');}
+    var titleEl=document.getElementById('cal-title');
+    if(titleEl){setP(titleEl,'left','0px');setP(titleEl,'top','0px');setP(titleEl,'width',CW+'px');setP(titleEl,'height','60px');}
+    var prev=document.getElementById('cal-prev'),todayB=document.getElementById('cal-today'),next=document.getElementById('cal-next');
+    if(prev){setP(prev,'right','190px');setP(prev,'top','12px');setP(prev,'width','48px');setP(prev,'height','36px');}
+    if(todayB){setP(todayB,'right','120px');setP(todayB,'top','12px');setP(todayB,'width','60px');setP(todayB,'height','36px');}
+    if(next){setP(next,'right','54px');setP(next,'top','12px');setP(next,'width','48px');setP(next,'height','36px');}
     var ix=20, iw=CW-40;
     var dayEl=document.getElementById('cal-day'), listEl=document.getElementById('cal-list'), inputEl=document.getElementById('cal-input'), addEl=document.getElementById('cal-add'), clockEl=document.getElementById('cal-clock');
-    if(dayEl)css(dayEl,'position:absolute;left:'+ix+'px;top:12px;width:'+iw+'px;height:32px;line-height:32px;text-align:center;font-family:'+F+';font-size:18px;font-weight:bold;border-bottom:1px solid '+BORDER+';');
-    if(listEl)css(listEl,'position:absolute;left:'+ix+'px;top:52px;width:'+iw+'px;height:'+Math.max(70,bottomH-140)+'px;overflow:hidden;');
-    if(inputEl)css(inputEl,'position:absolute;left:'+ix+'px;bottom:55px;width:'+(iw-112)+'px;height:38px;box-sizing:border-box;text-align:center;font-family:'+F+';font-size:15px;color:'+WHITE+';background:'+DARK+';border:0;outline:0;border-radius:5px;');
-    if(addEl)css(addEl,'position:absolute;left:'+(ix+iw-100)+'px;top:'+(bottomH-93)+'px;width:100px;height:38px;box-sizing:border-box;line-height:38px;text-align:center;font-family:'+F+';font-size:17px;color:#0d1117;background:'+GREEN+';border:0;outline:0;box-shadow:none;border-radius:5px;cursor:pointer;');
-    if(clockEl)css(clockEl,'position:absolute;left:'+ix+'px;top:'+(bottomH-45)+'px;width:'+iw+'px;height:32px;line-height:32px;text-align:center;font-family:'+F+';color:'+GREEN+';font-size:22px;font-weight:bold;');
-    css(grid,'position:absolute;left:'+mx+'px;top:'+(my+60)+'px;width:'+CW+'px;height:'+gridH+'px;');
+    if(dayEl){setP(dayEl,'left',ix+'px');setP(dayEl,'top','12px');setP(dayEl,'width',iw+'px');setP(dayEl,'height','32px');}
+    if(listEl){setP(listEl,'left',ix+'px');setP(listEl,'top','52px');setP(listEl,'width',iw+'px');setP(listEl,'height',Math.max(70,bottomH-140)+'px');}
+    if(inputEl){setP(inputEl,'left',ix+'px');setP(inputEl,'bottom','55px');setP(inputEl,'width',(iw-112)+'px');setP(inputEl,'height','38px');}
+    if(addEl){setP(addEl,'left',(ix+iw-100)+'px');setP(addEl,'top',(bottomH-93)+'px');setP(addEl,'width','100px');setP(addEl,'height','38px');setP(addEl,'line-height','38px');}
+    if(clockEl){setP(clockEl,'left',ix+'px');setP(clockEl,'top',(bottomH-45)+'px');setP(clockEl,'width',iw+'px');setP(clockEl,'height','32px');}
+    setP(grid,'left',mx+'px');setP(grid,'top',(my+60)+'px');setP(grid,'width',CW+'px');setP(grid,'height',gridH+'px');
+    var hs=grid.querySelectorAll('[data-week]');for(var i=0;i<hs.length;i++){setP(hs[i],'left',(i*cw)+'px');setP(hs[i],'width',cw+'px');}
+    var cells=grid.querySelectorAll('[data-index]');for(var j=0;j<cells.length;j++){setP(cells[j],'left',(j%7*cw+2)+'px');setP(cells[j],'top',(34+Math.floor(j/7)*ch+2)+'px');setP(cells[j],'width',(cw-4)+'px');setP(cells[j],'height',(ch-4)+'px');setP(cells[j],'line-height',(ch-4)+'px');}
+  }
+  // R5: dynamic updates only - textContent + paint-only props + idempotent
+  // dots. No geometry writes here (geometry() owns left/top/width/height).
+  function render(){
+    var grid=document.getElementById('cal-grid');if(!grid)return;
     var first=new Date(state.y,state.m,1),lead=first.getDay(),days=new Date(state.y,state.m+1,0).getDate(),prev=new Date(state.y,state.m,0).getDate();
-    var hs=grid.querySelectorAll('[data-week]');for(var i=0;i<hs.length;i++){css(hs[i],'position:absolute;top:0;left:'+(i*cw)+'px;width:'+cw+'px;height:34px;line-height:34px;text-align:center;font-family:'+F+';font-size:16px;color:'+LIGHT+';');}
     var cells=grid.querySelectorAll('[data-index]');for(var j=0;j<cells.length;j++){
       var m=state.m,y=state.y,dn,cls='cur';if(j<lead){cls='prev';m--;dn=prev-lead+1+j;}else if(j>=lead+days){cls='next';m++;dn=j-lead-days+1;}else dn=j-lead+1;
       var k=key(y,m,dn),sel=k===state.selected,today=k===state.today;
-      cells[j].setAttribute('data-date',k);text(cells[j],String(dn));css(cells[j],'position:absolute;left:'+(j%7*cw+2)+'px;top:'+(34+Math.floor(j/7)*ch+2)+'px;width:'+(cw-4)+'px;height:'+(ch-4)+'px;box-sizing:border-box;text-align:center;font-family:'+F+';font-size:'+(cls==='cur'?18:14)+'px;line-height:'+(ch-4)+'px;color:'+(cls==='cur'?WHITE:'rgba(208,215,222,.35)')+';background:'+(sel?'rgba(63,185,80,.85)':today?'rgba(63,185,80,.18)':'transparent')+';border:'+(today?'2px solid '+GREEN:'1px solid transparent')+';border-radius:5px;cursor:pointer;');
-      if(has(k)){var dot=el('span');text(dot,'•');css(dot,'position:absolute;right:7px;bottom:0;color:'+GREEN+';font-size:16px;line-height:14px;');cells[j].appendChild(dot);}
+      cells[j].setAttribute('data-date',k);text(cells[j],String(dn));
+      setP(cells[j],'background',sel?'rgba(63,185,80,.85)':today?'rgba(63,185,80,.18)':'transparent');
+      setP(cells[j],'border-color',today?GREEN:'transparent');
+      setP(cells[j],'color',cls==='cur'?WHITE:'rgba(255,255,255,.35)');
+      var old=cells[j].querySelectorAll('.cal-dot');for(var q=0;q<old.length;q++)old[q].parentNode.removeChild(old[q]);
+      if(has(k)){var dot=el('span');dot.className='cal-dot';text(dot,'•');css(dot,'position:absolute;right:7px;bottom:0;color:'+GREEN+';font-size:16px;line-height:14px;');cells[j].appendChild(dot);}
     }
     text(document.getElementById('cal-title'),state.y+' 年 '+(state.m+1)+' 月');
     var dt=state.selected.split('-'),dow=new Date(+dt[0],+dt[1]-1,+dt[2]).getDay(),events=state.events[state.selected]||[];
