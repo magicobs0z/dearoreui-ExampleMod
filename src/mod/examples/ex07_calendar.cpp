@@ -22,47 +22,25 @@ namespace {
 // ---------------------------------------------------------------------------
 // Page script. Pushed as a <script> DomNode at the end of the ComponentSpec
 // body (the verified injection channel; DOM <script> nodes / eval() crash the
-// engine). Layout is 100% absolute positioning with explicit pixel geometry -
-// the engine demonstrably honors it (CSS Grid/Flex were NOT reliable and
-// scattered days across the screen in the first attempt). Every visual token
-// (deep background, thin borders, rounded corners, blue accent) mirrors the
-// vanilla dark component renderer.
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// Page script - COMPONENT-DRIVEN build.
-// The page is declared as a DearOreUI component tree (see registerAll): the
-// renderer creates every visible element (Button/Text/Input/ListItem/Grid/
-// Stack) with its vanilla texture. This script never fabricates UI; it only:
-//   1) turns the section root into a fixed full-screen black wash,
-//   2) re-lays the component elements with explicit absolute coordinates
-//      (CSS grid/flex proven unreliable on this engine page context),
-//   3) fills data (dates, events, clock), rewrites CJK text on the component
-//      nodes (component labels must stay ASCII - theme font has no CJK),
-//   4) delegates clicks (component synthesised clicks are unreliable).
-// ---------------------------------------------------------------------------
-// ---------------------------------------------------------------------------
-// Page script - COMPONENT-DRIVEN build.
-// The page is a DearOreUI component tree (see registerAll): the renderer
-// creates every visible element (Button/Text/Input/ListItem/Grid/Stack) with
-// its vanilla texture. This script never fabricates UI; it only:
-//   1) turns the section root into a fixed full-screen black wash,
-//   2) re-lays component elements with explicit absolute coordinates
-//      (CSS grid/flex proven unreliable on this engine page context),
-//   3) fills data (dates/events/clock) and rewrites CJK on component nodes
-//      (component labels must be ASCII - theme font has no CJK glyphs),
-//   4) delegates clicks (component synthesised clicks are unreliable).
-// DOM contract (renderer emits in this order inside section):
-//   grid(grid)          > 7 Text (weekday) + 42 Button (day cells)
-//   nav(stack row)      > Button, Text(month), Button, Button
-//   ev(stack column)    > Text(day title), slots(stack), row(stack), Text(clock)
-//   slots.stack         > 4 x ListItem[ Text, Button(del) ]
-//   row.stack           > Input + Button(add)
+// engine).
+// R1/R2/R3: the whole layout skeleton is DECLARED in the C++ component tree
+// (see registerAll) - full-screen flex root, header, 6x7 grid and bottom are
+// injected by the renderer as flex-only DOM. This script never builds UI; it
+// only: 1) caches refs to the component-tree nodes, 2) sizes the flexible
+// regions once (geometry: flex + explicit dimension anchors, resize-only,
+// no per-pixel coordinates), 3) fills data with a DOM-diff render (only
+// changed cells are written), 4) delegates clicks (component synthesised
+// clicks are unreliable). Every visual token (deep background, thin borders,
+// rounded corners, green accent) mirrors the vanilla dark component renderer.
 // ---------------------------------------------------------------------------
 constexpr const char* kPageScript = R"js((function () {
-  // R5: layout geometry is computed once by geometry() (initial build +
-  // window resize). render() never writes top/left/width/height/right/bottom
-  // (the engine pays O(4^Depth) for those) and only touches textContent and
-  // paint-only props (background/border-color/color) plus idempotent dots.
+  // R1/R2/R3: the layout skeleton is declared entirely by the C++ component
+  // tree (see registerAll). This script NEVER builds UI; it only:
+  //   1) caches refs to the component-tree nodes (cache),
+  //   2) sizes flexible regions once (geometry: flex + explicit dimension
+  //      anchors, resize-only - no per-pixel left/top coordinates),
+  //   3) fills data with a DOM-diff render (only changed cells are written),
+  //   4) delegates clicks (component synthesised clicks are unreliable).
   var F = "'Microsoft YaHei','SimHei','Noto Sans SC','Noto Sans','Segoe UI',sans-serif";
   var WHITE='#ffffff', LIGHT='#d0d7de', DARK='#161b22', PANEL='#21262d', BORDER='#30363d', GREEN='#3fb950';
   var state={y:0,m:0,today:'',selected:'',events:{}};
@@ -74,87 +52,91 @@ constexpr const char* kPageScript = R"js((function () {
   function setP(n,k,v){n.style.setProperty(k,v);} // single-property write: never clobbers sibling-owner props
   function text(n,s){n.textContent=s;}
   function has(k){return state.events[k]&&state.events[k].length>0;}
+  var R={},last={cells:[],title:'',day:''};
   var tries=0;
   function boot(){
     tries++; var root=document.getElementById('cal-root');
     if(!root||!window.oreui){if(tries<60)setTimeout(boot,50);return;}
     var d=new Date(); state.y=d.getFullYear();state.m=d.getMonth();state.today=key(state.y,state.m,d.getDate());state.selected=state.today;
-    css(root,'position:fixed;top:0;left:0;right:0;bottom:0;overflow:hidden;background:rgba(0,0,0,.95);font-family:'+F+';color:'+WHITE+';user-select:none;');
-    build(root); render(); bind(root);
+    // Single-property writes: never clobber the component-tree layout props
+    // (position:fixed/display:flex on #cal-root) with a full cssText overwrite.
+    setP(root,'font-family',F);setP(root,'color',WHITE);setP(root,'user-select','none');
+    cache(); geometry(); render(); bind(root);
     window.addEventListener('resize',geometry);
     window.oreui.event.on('calendar.events',function(p){if(p&&p.events)state.events=p.events;render();});
-    window.oreui.event.on('calendar.clock',function(p){var c=document.getElementById('cal-clock');if(c)text(c,pad(p.h||0)+':'+pad(p.mi||0)+':'+pad(p.s||0));var k=key(p.y||0,(p.m||1)-1,p.d||1);if(k!==state.today){var old=state.today;state.today=k;if(state.selected===old){state.selected=k;state.y=p.y||state.y;state.m=(p.m||1)-1;}render();}});
+    window.oreui.event.on('calendar.clock',function(p){var c=R.clock;if(c)text(c,pad(p.h||0)+':'+pad(p.mi||0)+':'+pad(p.s||0));var k=key(p.y||0,(p.m||1)-1,p.d||1);if(k!==state.today){var old=state.today;state.today=k;if(state.selected===old){state.selected=k;state.y=p.y||state.y;state.m=(p.m||1)-1;}render();}});
   }
-  function build(root){
-    root.innerHTML='';
-    var header=el('div','cal-header');css(header,'position:absolute;background:'+PANEL+';border-bottom:2px solid '+BORDER+';');root.appendChild(header);
-    var titleEl=el('div','cal-title');css(titleEl,'position:absolute;line-height:60px;text-align:center;font-size:26px;font-weight:bold;');header.appendChild(titleEl);
-    addButton(header,'cal-prev','‹','position:absolute;');
-    addButton(header,'cal-today','今天','position:absolute;');
-    addButton(header,'cal-next','›','position:absolute;');
-    var grid=el('div','cal-grid');css(grid,'position:absolute;');root.appendChild(grid);
-    for(var i=0;i<7;i++){var h=el('div');h.setAttribute('data-week',String(i));text(h,week[i]);css(h,'position:absolute;top:0;height:34px;line-height:34px;text-align:center;font-size:16px;color:'+LIGHT+';');grid.appendChild(h);}
-    for(var j=0;j<42;j++){var cell=el('div');cell.setAttribute('data-index',String(j));css(cell,'position:absolute;box-sizing:border-box;text-align:center;font-size:18px;cursor:pointer;border:1px solid transparent;border-radius:4px;color:'+WHITE+';');grid.appendChild(cell);}
-    var bottom=el('div','cal-bottom');css(bottom,'position:absolute;background:rgba(22,27,34,.94);border-top:2px solid '+BORDER+';');root.appendChild(bottom);
-    var day=el('div','cal-day');css(day,'position:absolute;line-height:32px;text-align:center;font-size:18px;font-weight:bold;border-bottom:1px solid '+BORDER+';');bottom.appendChild(day);
-    var list=el('div','cal-list');css(list,'position:absolute;overflow:hidden;');bottom.appendChild(list);
-    var input=el('input','cal-input');input.setAttribute('placeholder','输入事件…');css(input,'position:absolute;box-sizing:border-box;text-align:center;font-family:'+F+';font-size:15px;color:'+WHITE+';background:'+DARK+';border:1px solid '+BORDER+';border-radius:5px;');bottom.appendChild(input);
-    addButton(bottom,'cal-add','添加','position:absolute;');
-    var addB=document.getElementById('cal-add');if(addB){setP(addB,'background',GREEN);setP(addB,'color','#0d1117');}
-    var clock=el('div','cal-clock');css(clock,'position:absolute;line-height:32px;text-align:center;color:'+GREEN+';font-size:22px;font-weight:bold;');text(clock,'--:--:--');bottom.appendChild(clock);
-    geometry();
+  // R2: cache refs to the component-tree skeleton; build the event-list row
+  // pool once (3 rows + empty state). No layout skeleton is fabricated here.
+  function cache(){
+    R.root=document.getElementById('cal-root');
+    R.grid=document.getElementById('cal-grid');R.bottom=document.getElementById('cal-bottom');
+    R.title=document.getElementById('cal-title');R.prev=document.getElementById('cal-prev');R.todayB=document.getElementById('cal-today');R.next=document.getElementById('cal-next');
+    R.day=document.getElementById('cal-day');R.list=document.getElementById('cal-list');R.input=document.getElementById('cal-input');R.add=document.getElementById('cal-add');R.clock=document.getElementById('cal-clock');
+    R.cells=R.grid?R.grid.querySelectorAll('[data-index]'):[];
+    R.rows=[];R.empty=null;
+    if(R.list){
+      R.empty=el('div');text(R.empty,'这一天没有事件');css(R.empty,'height:36px;line-height:36px;text-align:center;color:'+LIGHT+';font-size:15px;');R.list.appendChild(R.empty);
+      for(var i=0;i<3;i++){var row=el('div');row.setAttribute('data-del',String(i));css(row,'position:relative;height:30px;line-height:30px;text-align:center;color:'+WHITE+';font-size:15px;border-bottom:1px solid '+BORDER+';cursor:pointer;');var label=el('span');label.className='cal-ev';text(label,'');css(label,'display:flex;align-items:center;justify-content:center;width:100%;height:30px;');row.appendChild(label);var del=el('span');text(del,'×');css(del,'position:absolute;right:8px;top:0;width:24px;height:30px;line-height:30px;text-align:center;color:'+LIGHT+';');row.appendChild(del);R.rows.push(row);R.list.appendChild(row);row.style.display='none';}
+    }
   }
-  function addButton(parent,id,label,pos){var b=el('div',id);text(b,label);css(b,pos+'box-sizing:border-box;line-height:36px;text-align:center;font-family:'+F+';font-size:17px;color:'+LIGHT+';background:'+DARK+';border:0;outline:0;box-shadow:none;border-radius:5px;cursor:pointer;');parent.appendChild(b);}
-  // R5: the ONLY place that writes layout geometry (build + resize). Uses
-  // per-property setProperty so build() identity styles stay intact.
+  // R1: resize-only sizing with flex + explicit dimension anchors. Flex
+  // distributes header/grid/bottom and the 6x7 grid cells; no per-pixel
+  // left/top coordinates are ever written (render() writes none at all).
   function geometry(){
-    var root=document.getElementById('cal-root'),grid=document.getElementById('cal-grid');if(!root||!grid)return;
+    var root=R.root;if(!root||!R.grid)return;
     var W=root.clientWidth||window.innerWidth||1280,H=root.clientHeight||window.innerHeight||720;
-    // Keep the complete calendar inside a centered 80% viewport rectangle.
     var mx=Math.floor(W*0.10), my=Math.floor(H*0.10), CW=Math.max(320,W-2*mx), CH=Math.max(420,H-2*my);
-    var bottomH=Math.min(245,Math.floor(CH*0.30)), gridH=Math.max(260,CH-60-bottomH), cw=CW/7, ch=gridH/6;
-    var header=document.getElementById('cal-header'), bottom=document.getElementById('cal-bottom');
-    if(header){setP(header,'left',mx+'px');setP(header,'top',my+'px');setP(header,'width',CW+'px');setP(header,'height','60px');}
-    if(bottom){setP(bottom,'left',mx+'px');setP(bottom,'top',(my+CH-bottomH)+'px');setP(bottom,'width',CW+'px');setP(bottom,'height',bottomH+'px');}
-    var titleEl=document.getElementById('cal-title');
-    if(titleEl){setP(titleEl,'left','0px');setP(titleEl,'top','0px');setP(titleEl,'width',CW+'px');setP(titleEl,'height','60px');}
-    var prev=document.getElementById('cal-prev'),todayB=document.getElementById('cal-today'),next=document.getElementById('cal-next');
-    if(prev){setP(prev,'right','190px');setP(prev,'top','12px');setP(prev,'width','48px');setP(prev,'height','36px');}
-    if(todayB){setP(todayB,'right','120px');setP(todayB,'top','12px');setP(todayB,'width','60px');setP(todayB,'height','36px');}
-    if(next){setP(next,'right','54px');setP(next,'top','12px');setP(next,'width','48px');setP(next,'height','36px');}
-    var ix=20, iw=CW-40;
-    var dayEl=document.getElementById('cal-day'), listEl=document.getElementById('cal-list'), inputEl=document.getElementById('cal-input'), addEl=document.getElementById('cal-add'), clockEl=document.getElementById('cal-clock');
-    if(dayEl){setP(dayEl,'left',ix+'px');setP(dayEl,'top','12px');setP(dayEl,'width',iw+'px');setP(dayEl,'height','32px');}
-    if(listEl){setP(listEl,'left',ix+'px');setP(listEl,'top','52px');setP(listEl,'width',iw+'px');setP(listEl,'height',Math.max(70,bottomH-140)+'px');}
-    if(inputEl){setP(inputEl,'left',ix+'px');setP(inputEl,'bottom','55px');setP(inputEl,'width',(iw-112)+'px');setP(inputEl,'height','38px');}
-    if(addEl){setP(addEl,'left',(ix+iw-100)+'px');setP(addEl,'top',(bottomH-93)+'px');setP(addEl,'width','100px');setP(addEl,'height','38px');setP(addEl,'line-height','38px');}
-    if(clockEl){setP(clockEl,'left',ix+'px');setP(clockEl,'top',(bottomH-45)+'px');setP(clockEl,'width',iw+'px');setP(clockEl,'height','32px');}
-    setP(grid,'left',mx+'px');setP(grid,'top',(my+60)+'px');setP(grid,'width',CW+'px');setP(grid,'height',gridH+'px');
-    var hs=grid.querySelectorAll('[data-week]');for(var i=0;i<hs.length;i++){setP(hs[i],'left',(i*cw)+'px');setP(hs[i],'width',cw+'px');}
-    var cells=grid.querySelectorAll('[data-index]');for(var j=0;j<cells.length;j++){setP(cells[j],'left',(j%7*cw+2)+'px');setP(cells[j],'top',(34+Math.floor(j/7)*ch+2)+'px');setP(cells[j],'width',(cw-4)+'px');setP(cells[j],'height',(ch-4)+'px');setP(cells[j],'line-height',(ch-4)+'px');}
+    var bottomH=Math.min(245,Math.floor(CH*0.30));
+    // Keep the whole calendar inside a centered 80% viewport rectangle.
+    setP(root,'padding',my+'px '+mx+'px');
+    setP(R.grid,'flex','1 1 auto');
+    if(R.bottom){setP(R.bottom,'height',bottomH+'px');setP(R.bottom,'flex','none');}
+    var rows=R.grid.querySelectorAll('[data-gridrow]');
+    for(var i=0;i<rows.length;i++)setP(rows[i],'flex','1 1 auto');
   }
-  // R5: dynamic updates only - textContent + paint-only props + idempotent
-  // dots. No geometry writes here (geometry() owns left/top/width/height).
+  // R3: DOM-diff render - a memory snapshot gates every write, so a state
+  // change touches only the cells that actually changed. No geometry writes.
   function render(){
-    var grid=document.getElementById('cal-grid');if(!grid)return;
+    var grid=R.grid;if(!grid)return;
     var first=new Date(state.y,state.m,1),lead=first.getDay(),days=new Date(state.y,state.m+1,0).getDate(),prev=new Date(state.y,state.m,0).getDate();
-    var cells=grid.querySelectorAll('[data-index]');for(var j=0;j<cells.length;j++){
+    var cells=R.cells;
+    for(var j=0;j<cells.length;j++){
       var m=state.m,y=state.y,dn,cls='cur';if(j<lead){cls='prev';m--;dn=prev-lead+1+j;}else if(j>=lead+days){cls='next';m++;dn=j-lead-days+1;}else dn=j-lead+1;
       var k=key(y,m,dn),sel=k===state.selected,today=k===state.today;
-      cells[j].setAttribute('data-date',k);text(cells[j],String(dn));
-      setP(cells[j],'background',sel?'rgba(63,185,80,.85)':today?'rgba(63,185,80,.18)':'transparent');
-      setP(cells[j],'border-color',today?GREEN:'transparent');
-      setP(cells[j],'color',cls==='cur'?WHITE:'rgba(255,255,255,.35)');
-      var old=cells[j].querySelectorAll('.cal-dot');for(var q=0;q<old.length;q++)old[q].parentNode.removeChild(old[q]);
-      if(has(k)){var dot=el('span');dot.className='cal-dot';text(dot,'•');css(dot,'position:absolute;right:7px;bottom:0;color:'+GREEN+';font-size:16px;line-height:14px;');cells[j].appendChild(dot);}
+      var c=cells[j],L=last.cells[j]||(last.cells[j]={});
+      if(L.date!==k){c.setAttribute('data-date',k);L.date=k;}
+      if(L.dn!==dn){text(c,String(dn));L.dn=dn;}
+      var bg=sel?'rgba(63,185,80,.85)':today?'rgba(63,185,80,.18)':'transparent';
+      if(L.bg!==bg){setP(c,'background',bg);L.bg=bg;}
+      var bc=today?GREEN:'transparent';
+      if(L.bc!==bc){setP(c,'border-color',bc);L.bc=bc;}
+      var col=cls==='cur'?WHITE:'rgba(255,255,255,.35)';
+      if(L.col!==col){setP(c,'color',col);L.col=col;}
+      var h=has(k);
+      if(L.dot!==h){
+        var old=c.querySelectorAll('.cal-dot');for(var q=0;q<old.length;q++)old[q].parentNode.removeChild(old[q]);
+        if(h){var dot=el('span');dot.className='cal-dot';text(dot,'•');css(dot,'position:absolute;right:7px;bottom:0;color:'+GREEN+';font-size:16px;line-height:14px;');c.appendChild(dot);}
+        L.dot=h;
+      }
     }
-    text(document.getElementById('cal-title'),state.y+' 年 '+(state.m+1)+' 月');
-    var dt=state.selected.split('-'),dow=new Date(+dt[0],+dt[1]-1,+dt[2]).getDay(),events=state.events[state.selected]||[];
-    text(document.getElementById('cal-day'),(+dt[1])+' 月 '+(+dt[2])+' 日 · 周'+week[dow]+(state.selected===state.today?'（今天）':''));
-    var list=document.getElementById('cal-list');list.innerHTML='';if(!events.length){var empty=el('div');text(empty,'这一天没有事件');css(empty,'height:36px;line-height:36px;text-align:center;color:'+LIGHT+';font-size:15px;');list.appendChild(empty);}else for(var e=0;e<events.length&&e<3;e++){var row=el('div');row.setAttribute('data-del',String(e));css(row,'position:relative;height:30px;line-height:30px;text-align:center;color:'+WHITE+';font-size:15px;border-bottom:1px solid '+BORDER+';cursor:pointer;');var label=el('span');text(label,'•  '+events[e]);css(label,'display:flex;align-items:center;justify-content:center;width:100%;height:30px;');row.appendChild(label);var del=el('span');text(del,'×');css(del,'position:absolute;right:8px;top:0;width:24px;height:30px;line-height:30px;text-align:center;color:'+LIGHT+';');row.appendChild(del);list.appendChild(row);}
+    if(R.title){var t=state.y+' 年 '+(state.m+1)+' 月';if(last.title!==t){text(R.title,t);last.title=t;}}
+    var dt=state.selected.split('-'),dow=new Date(+dt[0],+dt[1]-1,+dt[2]).getDay(),evs=state.events[state.selected]||[];
+    if(R.day){var d2=(+dt[1])+' 月 '+(+dt[2])+' 日 · 周'+week[dow]+(state.selected===state.today?'（今天）':'');if(last.day!==d2){text(R.day,d2);last.day=d2;}}
+    // Event list via row pool (R3): reuse nodes, only fill text / toggle hide.
+    if(R.list){
+      var showEmpty=!evs.length;
+      if(R.empty)R.empty.style.display=showEmpty?'':'none';
+      for(var e=0;e<R.rows.length;e++){
+        var row=R.rows[e],ev=evs[e];
+        var vis=!showEmpty&&ev!==undefined;
+        row.style.display=vis?'':'none';
+        if(vis){var lb=row.querySelector('.cal-ev');if(lb)text(lb,'•  '+ev);}
+      }
+    }
   }
-  function bind(root){root.addEventListener('click',function(e){var t=e.target,id=t&&t.id;if(id==='cal-prev'){state.m--;if(state.m<0){state.m=11;state.y--;}render();return;}if(id==='cal-next'){state.m++;if(state.m>11){state.m=0;state.y++;}render();return;}if(id==='cal-today'){var d=new Date();state.y=d.getFullYear();state.m=d.getMonth();state.selected=state.today;render();return;}if(id==='cal-add'){add();return;}while(t&&t!==root){if(t.getAttribute){var date=t.getAttribute('data-date'),del=t.getAttribute('data-del');if(date){state.selected=date;render();return;}if(del!==null){remove(+del);return;}}t=t.parentNode;}});var input=document.getElementById('cal-input');if(input)input.addEventListener('keydown',function(e){if(e.key==='Enter')add();});}
-  function add(){var input=document.getElementById('cal-input'),s=input&&input.value.trim();if(!s)return;if(!state.events[state.selected])state.events[state.selected]=[];state.events[state.selected].push(s);input.value='';render();}
+  function bind(root){root.addEventListener('click',function(e){var t=e.target,id=t&&t.id;if(id==='cal-prev'){state.m--;if(state.m<0){state.m=11;state.y--;}render();return;}if(id==='cal-next'){state.m++;if(state.m>11){state.m=0;state.y++;}render();return;}if(id==='cal-today'){var d=new Date();state.y=d.getFullYear();state.m=d.getMonth();state.selected=state.today;render();return;}if(id==='cal-add'){add();return;}while(t&&t!==root){if(t.getAttribute){var date=t.getAttribute('data-date'),del=t.getAttribute('data-del');if(date){state.selected=date;render();return;}if(del!==null){remove(+del);return;}}t=t.parentNode;}});var input=R.input;if(input)input.addEventListener('keydown',function(e){if(e.key==='Enter')add();});}
+  function add(){var input=R.input,s=input&&input.value.trim();if(!s)return;if(!state.events[state.selected])state.events[state.selected]=[];state.events[state.selected].push(s);input.value='';render();}
   function remove(i){var a=state.events[state.selected];if(!a)return;a.splice(i,1);if(!a.length)delete state.events[state.selected];render();}
   boot();
 })();
@@ -261,18 +243,110 @@ bool CalendarExample::registerAll() {
         dearoreui::api::makeUiContainerId(uiManifest.modNamespace, uiManifest.kind, uiManifest.id);
     uiManifest.fingerprint = "calendar.v1";
 
-    // Stable fallback: retain DearOreUI Section as the page shell, while the
-    // data-heavy calendar is built with explicit absolute DOM geometry. This
-    // avoids the client repeatedly re-applying Grid/Stack/Button state styles.
+    // R1/R2/R3: the whole static skeleton is DECLARED here - the component
+    // tree is the single source of layout. Flexbox-only (the only legal
+    // display values on the engine are flex/none); the only absolute
+    // positioning is the fixed full-screen root. The page script never builds
+    // UI - it caches refs, does resize-only geometry and DOM-diff data fills.
+    auto navButton = [](char const* id, char const* text) {
+        return dearoreui::api::DomNode{
+            .tag   = "div",
+            .attrs = {{"id", id}},
+            .style = "flex:none;padding:6px 16px;background:#21262d;"
+                     "border:1px solid #30363d;border-radius:6px;color:#ffffff;"
+                     "font-size:14px;cursor:pointer;",
+            .text = text,
+        };
+    };
+
+    // Grid = 6 flex rows x 7 flex cells (data-index 0..41, DOM row-major
+    // order - the page script walks cells[j] in that same order).
+    std::vector<dearoreui::api::DomNode> gridRows;
+    for (int row = 0; row < 6; ++row) {
+        std::vector<dearoreui::api::DomNode> cells;
+        for (int col = 0; col < 7; ++col) {
+            cells.push_back(dearoreui::api::DomNode{
+                .tag   = "div",
+                .attrs = {{"data-index", std::to_string(row * 7 + col)}},
+                .style = "flex:1;position:relative;display:flex;align-items:center;"
+                         "justify-content:center;border:1px solid transparent;"
+                         "border-radius:6px;font-size:16px;cursor:pointer;",
+            });
+        }
+        gridRows.push_back(dearoreui::api::DomNode{
+            .tag      = "div",
+            .attrs    = {{"data-gridrow", ""}},
+            .style    = "flex:1;display:flex;flex-direction:row;gap:4px;",
+            .children = std::move(cells),
+        });
+    }
+
     std::vector<dearoreui::api::DomNode> body;
     body.push_back(dearoreui::api::DomNode{
         .tag   = "div",
         .attrs = {{"id", "cal-root"}},
         // Verified full-screen pattern (stage 7.1): inset 0 instead of the
-        // unverified 100vw/100vh viewport units (unsupported units collapse
-        // the root to 0x0 and hide the black backdrop).
-        .style = "position:fixed;top:0;left:0;right:0;bottom:0;overflow:hidden;",
-        .text  = "",
+        // unverified 100vw/100vh viewport units. Flex column distributes the
+        // header / grid / bottom regions; no per-pixel coordinates anywhere.
+        .style = "position:fixed;top:0;left:0;right:0;bottom:0;overflow:hidden;"
+                 "display:flex;flex-direction:column;background:rgba(0,0,0,.95);",
+        .children = {
+            // Header: left spacer + centered title + right nav (flex equalizes
+            // the two spacers so the title stays centered).
+            dearoreui::api::DomNode{
+                .tag   = "div",
+                .attrs = {{"id", "cal-header"}},
+                .style = "flex:none;display:flex;align-items:center;height:60px;padding:0 24px;",
+                .children = {
+                    dearoreui::api::DomNode{.tag = "div", .attrs = {{"id", "cal-left"}}, .style = "flex:1;"},
+                    dearoreui::api::DomNode{.tag = "div", .attrs = {{"id", "cal-title"}},
+                                            .style = "flex:none;font-size:22px;color:#ffffff;font-weight:600;letter-spacing:2px;"},
+                    dearoreui::api::DomNode{
+                        .tag   = "div",
+                        .attrs = {{"id", "cal-nav"}},
+                        .style = "flex:1;display:flex;align-items:center;justify-content:flex-end;gap:10px;",
+                        .children = {
+                            navButton("cal-prev", "◀"),
+                            navButton("cal-today", "今天"),
+                            navButton("cal-next", "▶"),
+                        },
+                    },
+                },
+            },
+            // Grid: 6 flex rows x 7 flex cells.
+            dearoreui::api::DomNode{
+                .tag      = "div",
+                .attrs    = {{"id", "cal-grid"}},
+                .style    = "flex:1;display:flex;flex-direction:column;padding:0 24px;gap:4px;",
+                .children = std::move(gridRows),
+            },
+            // Bottom: date detail + event list + input row + clock.
+            dearoreui::api::DomNode{
+                .tag   = "div",
+                .attrs = {{"id", "cal-bottom"}},
+                .style = "flex:none;display:flex;flex-direction:column;padding:0 24px 24px;",
+                .children = {
+                    dearoreui::api::DomNode{.tag = "div", .attrs = {{"id", "cal-day"}},
+                                            .style = "flex:none;height:34px;line-height:34px;font-size:16px;color:#d0d7de;"},
+                    dearoreui::api::DomNode{.tag = "div", .attrs = {{"id", "cal-list"}},
+                                            .style = "flex:1;overflow:hidden;margin-top:4px;"},
+                    dearoreui::api::DomNode{
+                        .tag   = "div",
+                        .attrs = {{"id", "cal-actionrow"}},
+                        .style = "flex:none;display:flex;gap:10px;margin-top:12px;",
+                        .children = {
+                            dearoreui::api::DomNode{.tag = "input", .attrs = {{"id", "cal-input"}},
+                                                    .style = "flex:1;height:40px;padding:0 12px;background:#0d1117;border:1px solid #30363d;border-radius:6px;color:#ffffff;font-size:14px;outline:none;"},
+                            dearoreui::api::DomNode{.tag = "div", .attrs = {{"id", "cal-add"}},
+                                                    .style = "flex:none;width:64px;height:40px;background:#238636;border:1px solid #2ea043;border-radius:6px;color:#ffffff;font-size:14px;cursor:pointer;display:flex;align-items:center;justify-content:center;",
+                                                    .text = "添加"},
+                        },
+                    },
+                    dearoreui::api::DomNode{.tag = "div", .attrs = {{"id", "cal-clock"}},
+                                            .style = "flex:none;height:30px;line-height:30px;margin-top:8px;text-align:center;color:#3fb950;font-size:16px;letter-spacing:2px;"},
+                },
+            },
+        },
     });
     body.push_back(dearoreui::api::DomNode{.tag = "script", .text = kPageScript});
 
