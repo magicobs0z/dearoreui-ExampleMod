@@ -66,3 +66,18 @@ target("my-mod") -- Change this to your mod name.
     --  add_includedirs("src-client")
     --  add_files("src-client/**.cpp")
     end
+
+    -- T1: ship the page-script assets (scripts/) next to the mod dll so the
+    -- runtime can load them via NativeMod::getModDir() at registration time.
+    -- Runs after the modpacker rule (rules' after_build fire before the
+    -- target's), so bin/<modName>/ already exists.
+    after_build(function(target)
+        local mod_define = target:extraconf("rules", "@levibuildscript/modpacker") or {}
+        local modName    = mod_define.modName or target:name()
+        local srcDir     = path.join(os.scriptdir(), "assets", "scripts")
+        if os.isdir(srcDir) then
+            local outDir = path.join(os.projectdir(), "bin", modName, "scripts")
+            os.mkdir(outDir)
+            os.cp(path.join(srcDir, "*"), outDir)
+        end
+    end)
