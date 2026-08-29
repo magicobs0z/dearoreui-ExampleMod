@@ -59,6 +59,12 @@ target("my-mod") -- Change this to your mod name.
     add_headerfiles("src/**.h")
     add_files("src/**.cpp")
     add_includedirs("src")
+    -- ABI 同步（开发期）：本地构建的 DearOreUI.dll 基于 DearOreUI/src 编译，
+    -- my-mod 必须使用同一份公开头，否则 ComponentSpec 等结构体出现布局漂移
+    -- （R2 曾使 ComponentSpec 增加 id 字段，包版本滞后即崩溃）。target 级
+    -- add_includedirs 在 xmake 中先于包 include 参与搜索，故此处本地头优先命中。
+    -- 发布时改回 add_requires("dearoreui <new-version>") 并移除本行。
+    add_includedirs(path.join("$(projectdir)", "..", "DearOreUI", "src"))
     if is_config("target_type", "server") then
     --  add_includedirs("src-server")
     --  add_files("src-server/**.cpp")
