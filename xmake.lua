@@ -1,6 +1,12 @@
 add_rules("mode.debug", "mode.release")
 
 add_repositories("levimc-repo https://github.com/LiteLDev/xmake-repo.git")
+-- DearOreUI's header-only public API package. Resolved from the self-hosted
+-- xmake-repo (dearoreui-repo) which git-references Dear-OreUI directly, so the
+-- build obtains the public headers declaratively via add_requires/add_packages
+-- (no manual include path). Local dev may point at the repo checkout instead:
+--   add_repositories("dearoreui-repo ../dearoreui-repo")
+add_repositories("dearoreui-repo https://github.com/copper-lamp/dearoreui-repo.git")
 
 option("target_type")
     set_default("client")
@@ -8,17 +14,14 @@ option("target_type")
     set_values("server", "client")
 option_end()
 
--- DearOreUI is a prerequisite client mod. Point at its Public API headers:
--- either the published install tree (include/dearoreui) or the source tree.
-option("dearoreui_include")
-    set_default("../DearOreUI/src")
-    set_showmenu(true)
-option_end()
-
 -- add_requires("levilamina x.x.x") for a specific version
 -- add_requires("levilamina develop") to use develop version
 -- please note that you should add bdslibrary yourself if using dev version
 add_requires("levilamina 26.10.*", {configs = {target_type = get_config("target_type")}})
+
+-- DearOreUI public headers (header-only; runtime is resolved via the C ABI
+-- bridge from the loaded DearOreUI.dll, so no import library is linked).
+add_requires("dearoreui 0.1.1")
 
 add_requires("levibuildscript")
 
@@ -49,13 +52,19 @@ target("my-mod") -- Change this to your mod name.
         set_toolchains("clang-cl")
     end
     add_packages("levilamina")
+    add_packages("dearoreui")
     set_kind("shared")
     set_languages("c++20")
     set_symbols("debug")
     add_headerfiles("src/**.h")
     add_files("src/**.cpp")
     add_includedirs("src")
-    add_includedirs(get_config("dearoreui_include"))
+    -- ABI 同步（开发期）：本地构建的 DearOreUI.dll 基于 DearOreUI/src 编译，
+    -- my-mod 必须使用同一份公开头，否则 ComponentSpec 等结构体出现布局漂移
+    -- （R2 曾使 ComponentSpec 增加 id 字段，包版本滞后即崩溃）。target 级
+    -- add_includedirs 在 xmake 中先于包 include 参与搜索，故此处本地头优先命中。
+    -- 发布时改回 add_requires("dearoreui <new-version>") 并移除本行。
+    add_includedirs(path.join("$(projectdir)", "..", "DearOreUI", "src"))
     if is_config("target_type", "server") then
     --  add_includedirs("src-server")
     --  add_files("src-server/**.cpp")
@@ -63,3 +72,18 @@ target("my-mod") -- Change this to your mod name.
     --  add_includedirs("src-client")
     --  add_files("src-client/**.cpp")
     end
+
+    -- T1: ship the page-script assets (scripts/) next to the mod dll so the
+    -- runtime can load them via NativeMod::getModDir() at registration time.
+    -- Runs after the modpacker rule (rules' after_build fire before the
+    -- target's), so bin/<modName>/ already exists.
+    after_build(function(target)
+        local mod_define = target:extraconf("rules", "@levibuildscript/modpacker") or {}
+        local modName    = mod_define.modName or target:name()
+        local srcDir     = path.join(os.scriptdir(), "assets", "scripts")
+        if os.isdir(srcDir) then
+            local outDir = path.join(os.projectdir(), "bin", modName, "scripts")
+            os.mkdir(outDir)
+            os.cp(path.join(srcDir, "*"), outDir)
+        end
+    end)

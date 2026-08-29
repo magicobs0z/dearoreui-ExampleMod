@@ -1,26 +1,33 @@
-# LeviLamina Mod Template
+# DearOreUI 示例模组
 
-Mod Template for LeviLamina
+把 [DearOreUI](https://github.com/copper-lamp/Dear-OreUI) 作为**前置库**接入 LeviLamina 客户端模组的示例工程，也是一套 **阶梯教程（日历主题）**：同一个日历从静态骨架一步步长成完整全屏日历，顺带学完 DearOreUI 的全部能力。
 
-## Usage
+## 依赖
 
-For detailed instructions, see the [LeviLamina Documentation](https://lamina.levimc.org/developer_guides/tutorials/create_your_first_mod/)
+- [LeviLamina](https://github.com/LiteLDev/LeviLamina) 26.10.x（client）
+- [DearOreUI](https://github.com/copper-lamp/Dear-OreUI) v0.1.1（前置，`manifest.json` 已声明依赖）
 
-1. Generate a new repository from this template
-2. Clone the new repository
-3. Change the mod name and the expected LeviLamina version in `xmake.lua`
-4. Add your code.
-5. Run `xmake f -y -p windows -a x64 -m release` in the root of the repository
-6. Run `xmake` to build the mod.
+## 构建
 
-After a successful build, you will find mod in `bin/`
+```powershell
+xmake repo -u
+xmake f -a x64 -m release -p windows --target_type=client -y
+xmake -v -y
+```
 
-## Contributing
+产物位于 `bin/my-mod/`。
 
-Ask questions by creating an issue.
+## 安装与使用
 
-PRs accepted.
+1. 先安装 DearOreUI 前置。
+2. 将 `bin/my-mod/` 复制到客户端 `mods/` 目录。
+3. 编辑模组目录下 `config.json` 的 `"example"` 字段切换课程。
+4. 重启游戏（或重进主菜单）生效。**切换课程无需重新编译**。
 
-## License
+## 课程文档
 
-CC0-1.0 © LeviMC(LiteLDev)
+- [在你的模组中使用 DearOreUI](https://copper-lamp.github.io/dearoreui-docs/guide/environment)
+
+## 许可证
+
+[CC0-1.0](LICENSE)

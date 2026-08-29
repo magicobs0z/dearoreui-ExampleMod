@@ -8,10 +8,11 @@
 namespace my_mod {
 namespace examples {
 
-/// Builds the example selected by config.json (["example"]), default "07".
-/// Falls back to the default example and logs a warning for unknown ids.
-/// Example 06 (host method / single JS->C++ dispatch) is kept but disabled
-/// by default: it can only be selected explicitly.
+/// Builds the example selected by config.json (["example"]), default "04".
+/// 01 - Hello Connection (bridge + mod registration)
+/// 02 - Component Script (component tree + page script)
+/// 03 - Communication (events + frame clock + host method)
+/// 04 - Calendar Demo (polished full-featured calendar)
 class ExampleFactory {
 public:
     /// @param configPath Directory containing config.json (mod dir).
