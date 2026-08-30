@@ -2,6 +2,16 @@
 
 把 [DearOreUI](https://github.com/copper-lamp/Dear-OreUI) 作为**前置库**接入 LeviLamina 客户端模组的示例工程，也是一套 **阶梯教程（日历主题）**：同一个日历从静态骨架一步步长成完整全屏日历，顺带学完 DearOreUI 的全部能力。
 
+## 生态
+
+| 项目 | 仓库 | 作用 |
+| --- | --- | --- |
+| **DearOreUI** | [copper-lamp/Dear-OreUI](https://github.com/copper-lamp/Dear-OreUI) | 原生 LeviLamina 运行时（本模组的前置库） |
+| **DearOreUI 设计器** | [copper-lamp/DearOreUI-dev-tools](https://github.com/copper-lamp/DearOreUI-dev-tools) | 离线可视化设计器 —— 可不启动游戏预览本模组 UI |
+| **DearOreUI 文档** | [copper-lamp/dearoreui-docs](https://github.com/copper-lamp/dearoreui-docs) | 官方文档与学习站点 |
+| **dearoreui-ExampleMod** | [magicobs0z/dearoreui-ExampleMod](https://github.com/magicobs0z/dearoreui-ExampleMod) | 本仓库 —— 阶梯教程模组 |
+| **dearoreui-repo** | [copper-lamp/dearoreui-repo](https://github.com/copper-lamp/dearoreui-repo) | 自托管 xmake 包仓库（header-only 公共 API） |
+
 ## 依赖
 
 - [LeviLamina](https://github.com/LiteLDev/LeviLamina) 26.10.x（client）
